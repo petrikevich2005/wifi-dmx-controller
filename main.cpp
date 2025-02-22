@@ -7,7 +7,6 @@
 const char* ssid = "DMX - controller";
 const char* password = "password";
 
-// Настройки статического IP
 IPAddress local_IP(192, 168, 1, 100);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
@@ -15,45 +14,31 @@ IPAddress primaryDNS(8, 8, 8, 8);
 IPAddress secondaryDNS(8, 8, 4, 4);
 
 ArtnetWifi artnet;
-HardwareSerial DMXSerial(2); // UART2 для MAX485
+HardwareSerial DMXSerial(2);
 
-#define DMX_PIN 17   // TX на MAX485
+#define DMX_PIN 17   // TX на SP3485
 #define ENABLE_PIN 4 // Управление передачей
+#define WIFI_RECONNECT_TIMEOUT 60000 // Переподключение Wi-Fi через 60 секунд
 
 unsigned long lastPacketTime = 0;
+unsigned long lastReconnectAttempt = 0;
 
 void setup() {
     Serial.begin(115200);
-    
-    // Настройка статического IP
     if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
         Serial.println("Ошибка настройки статического IP");
     }
-    
     WiFi.begin(ssid, password);
-    unsigned long startAttemptTime = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
-        delay(500);
-        Serial.print(".");
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("\nWiFi failed! Restarting...");
-        ESP.restart();
-    }
-    
-    Serial.println("\nWiFi Connected");
-    Serial.print("IP-адрес: ");
-    Serial.println(WiFi.localIP());
-    
+    connectWiFi();
+
     artnet.begin();
     artnet.setArtDmxCallback(onArtnetData);
 
-    DMXSerial.begin(250000, SERIAL_8N2, -1, DMX_PIN); // DMX: 250000 бод, 8 бит, 2 стоп-бита
+    DMXSerial.begin(250000, SERIAL_8N2, -1, DMX_PIN);
     pinMode(ENABLE_PIN, OUTPUT);
-    digitalWrite(ENABLE_PIN, LOW); // Включаем приём
+    digitalWrite(ENABLE_PIN, LOW);
     
-    // Инициализация OTA с паролем
-    ArduinoOTA.setPasswordHash("5f4dcc3b5aa765d61d8327deb882cf99"); // MD5-хеш пароля "password"
+    ArduinoOTA.setPasswordHash("5f4dcc3b5aa765d61d8327deb882cf99");
     ArduinoOTA.begin();
 }
 
@@ -64,7 +49,7 @@ void loop() {
         lastPacketTime = currentTime;
     }
 
-    if (currentTime - lastPacketTime > 10000) { // Если данных нет более 10 сек
+    if (currentTime - lastPacketTime > 10000) {
         Serial.println("Art-Net данные не поступают!");
     }
     
@@ -72,27 +57,26 @@ void loop() {
     ArduinoOTA.handle();
 }
 
+void connectWiFi() {
+    Serial.print("Подключение к Wi-Fi...");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWi-Fi подключён");
+    Serial.print("IP-адрес: ");
+    Serial.println(WiFi.localIP());
+}
+
 void checkWiFi() {
-    static unsigned long lastCheck = 0;
-    static int reconnectAttempts = 0;
-    
-    if (millis() - lastCheck > 10000) { // Проверяем раз в 10 секунд
-        lastCheck = millis();
-        
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("Соединение потеряно! Переподключение...");
+    if (WiFi.status() != WL_CONNECTED) {
+        unsigned long currentMillis = millis();
+        if (currentMillis - lastReconnectAttempt >= WIFI_RECONNECT_TIMEOUT) {
+            Serial.println("Wi-Fi потерян! Переподключение...");
             WiFi.disconnect();
             delay(1000);
             WiFi.reconnect();
-            
-            reconnectAttempts++;
-            if (reconnectAttempts >= 5) { // После 5 неудачных попыток увеличиваем интервал
-                Serial.println("Wi-Fi не восстановлено. Ждем 60 сек перед повторной попыткой...");
-                delay(60000);
-                reconnectAttempts = 0;
-            }
-        } else {
-            reconnectAttempts = 0; // Сбрасываем счетчик при успешном подключении
+            lastReconnectAttempt = currentMillis;
         }
     }
 }
@@ -102,18 +86,15 @@ void onArtnetData(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t*
         Serial.println("Ошибка: Пустой пакет DMX!");
         return;
     }
-    
     if (length > 512) {
         Serial.println("Предупреждение: Длина DMX пакета превышает 512 байт, обрезаем...");
         length = 512;
     }
     
-    digitalWrite(ENABLE_PIN, HIGH); // Включаем передачу
-    esp_delay_us(88); // Оптимизированная задержка
-    DMXSerial.write(0); // Старт-код DMX
-    DMXSerial.write(data, length); // Отправка данных
-    delay(1); // Короткая задержка для корректного завершения передачи
-    digitalWrite(ENABLE_PIN, LOW); // Отключаем передачу
+    digitalWrite(ENABLE_PIN, HIGH);
+    esp_delay_us(88);
+    DMXSerial.write(0);
+    DMXSerial.write(data, length);
+    esp_delay_us(44);
+    digitalWrite(ENABLE_PIN, LOW);
 }
-
-// TODO: Добавить проверку уровня напряжения питания ESP32 через ADC
