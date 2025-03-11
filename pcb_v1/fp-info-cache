@@ -1,4 +1,4 @@
-24697830226335771
+24704796832635763
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -99356,7 +99356,7 @@ user_library
 
 0
 2
-1
+2
 user_library
 3pin_10mm
 
@@ -99365,6 +99365,20 @@ user_library
 3
 3
 user_library
+CP2102_Conn
+
+
+0
+4
+4
+user_library
+ESP32-WROOM-32U
+Single 2.4 GHz Wi-Fi and Bluetooth combo chip with U.FL connector, https://www.espressif.com/sites/default/files/documentation/esp32-wroom-32d_esp32-wroom-32u_datasheet_en.pdf
+Single 2.4 GHz Wi-Fi and Bluetooth combo  chip
+0
+60
+39
+user_library
 FSMSM_smd_button
 
 
@@ -99372,7 +99386,21 @@ FSMSM_smd_button
 2
 2
 user_library
+NPTH
+
+
+0
+0
+0
+user_library
 TestPoint 2pin
+
+
+0
+2
+2
+user_library
+small_2pin
 
 
 0

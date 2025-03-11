@@ -37,9 +37,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.762,
-          "height": 1.524,
-          "width": 1.524
+          "drill": 2.4,
+          "height": 5.0,
+          "width": 5.0
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -51,7 +51,13 @@
           "min_clearance": 0.5
         }
       },
-      "diff_pair_dimensions": [],
+      "diff_pair_dimensions": [
+        {
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
+        }
+      ],
       "drc_exclusions": [],
       "meta": {
         "version": 2
@@ -171,7 +177,14 @@
           "td_width_to_size_filter_ratio": 0.9
         }
       ],
-      "track_widths": [],
+      "track_widths": [
+        0.0,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        1.0
+      ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
           "corner_radius_percentage": 80,
@@ -198,7 +211,12 @@
           "spacing": 0.6
         }
       },
-      "via_dimensions": [],
+      "via_dimensions": [
+        {
+          "diameter": 0.0,
+          "drill": 0.0
+        }
+      ],
       "zones_allow_external_fillets": false
     },
     "ipc2581": {
@@ -216,10 +234,7 @@
     "equivalence_files": []
   },
   "erc": {
-    "erc_exclusions": [
-      "power_pin_not_driven|1308100|546100|310532c4-50e0-45f7-8a7f-aeffaf5049a6|00000000-0000-0000-0000-000000000000|/d880dd01-f432-40fc-aff2-85e7f67a71d8|/d880dd01-f432-40fc-aff2-85e7f67a71d8|",
-      "power_pin_not_driven|1384300|469900|ec075690-65fb-499b-9e32-0fca3efba168|00000000-0000-0000-0000-000000000000|/d880dd01-f432-40fc-aff2-85e7f67a71d8|/d880dd01-f432-40fc-aff2-85e7f67a71d8|"
-    ],
+    "erc_exclusions": [],
     "meta": {
       "version": 0
     },
