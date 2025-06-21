@@ -6,6 +6,7 @@
 #include "esp_system.h"
 
 // ==== НАСТРОЙКИ ====
+#define DEVICE_INDEX 1 // номер устройства  |  влияет на приоритет STA / AP
 const char* ssid     = "grace_light";
 const char* password = "grace_dmx512";
 
@@ -21,6 +22,9 @@ const char* password = "grace_dmx512";
 
 uint8_t dmx_data[DMX_PACKET_SIZE] = {0};
 WiFiUDP Udp;
+
+#define LOOP_CHECK_POINT 200
+int loopCounter = 0;
 
 // ==== DMX ПЕРЕДАЧА ====
 void send_dmx() {
@@ -46,9 +50,10 @@ bool connectToWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
+  unsigned int timeout = 6000 * DEVICE_INDEX;
   unsigned long startAttemptTime = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 6000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < timeout) {
     delay(200);
   }
 
@@ -85,7 +90,8 @@ void setup() {
   }
 
   // OTA
-  ArduinoOTA.setHostname("esp32-artnet");
+  ArduinoOTA.setHostname(("esp32-artnet-" + String(DEVICE_INDEX)).c_str());
+  ArduinoOTA.setPasswordHash("3f483ade2441b07818408b62709274e2");
   ArduinoOTA.begin();
 
   // ArtNet UDP
@@ -117,7 +123,11 @@ void setup() {
 
 // ==== LOOP ====
 void loop() {
-  ArduinoOTA.handle();
+  loopCounter++;
+  if (loopCounter >= LOOP_CHECK_POINT) {
+    ArduinoOTA.handle();
+    loopCounter = 0;
+  }
 
   int packetSize = Udp.parsePacket();
   if (packetSize > 0) {
