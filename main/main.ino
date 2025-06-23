@@ -7,15 +7,28 @@
 
 // ==== НАСТРОЙКИ ====
 #define DEVICE_INDEX 1 // номер устройства  |  влияет на приоритет STA / AP
-const char* ssid     = "grace_light";
-const char* password = "grace_dmx512";
 
+//WIFI SETTINGS
+const char* ssid = "grace_light";
+const char* password = "grace_dmx512";
+bool apMode = false;
+unsigned long wifiLostTime = 0;
+const unsigned long wifiRetryWindow = 10000;  // 10 секунд
+const unsigned long startTimeoutConnetion = 4000;
+
+// LED SETTINGS
+#define STATUS_LED_PIN GPIO_NUM_2
+bool ledState = false;
+unsigned long lastLedUpdate = 0;
+
+// DMX SETTINGS
 #define DMX_UART_NUM     UART_NUM_1
 #define DMX_TX_PIN       GPIO_NUM_17
 #define DMX_DE_RE_PIN    GPIO_NUM_4
 #define DMX_CHANNELS     512
 #define DMX_PACKET_SIZE  (1 + DMX_CHANNELS)  // старт-код + 512 каналов
 
+//ART_NET SETTINGS
 #define ART_NET_PORT     6454
 #define ART_NET_ID       "Art-Net\0"
 #define ART_DMX_OPCODE   0x5000
@@ -23,7 +36,7 @@ const char* password = "grace_dmx512";
 uint8_t dmx_data[DMX_PACKET_SIZE] = {0};
 WiFiUDP Udp;
 
-#define LOOP_CHECK_POINT 200
+#define LOOP_CHECK_POINT 50
 int loopCounter = 0;
 
 // ==== DMX ПЕРЕДАЧА ====
@@ -50,7 +63,7 @@ bool connectToWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  unsigned int timeout = 6000 * DEVICE_INDEX;
+  unsigned long timeout = startTimeoutConnetion * DEVICE_INDEX;
   unsigned long startAttemptTime = millis();
 
   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < timeout) {
@@ -63,6 +76,7 @@ bool connectToWiFi() {
 // ==== Создание точки доступа с фиксированным IP ====
 void startAccessPoint() {
 
+  WiFi.mode(WIFI_OFF);
   WiFi.mode(WIFI_AP);
 
   // Настраиваем статический IP для AP интерфейса
@@ -72,14 +86,86 @@ void startAccessPoint() {
   WiFi.softAPConfig(local_ip, gateway, subnet);
 
   bool apOk = WiFi.softAP(ssid, password);
-  if (!apOk) {
+  if (apOk) {
+    apMode = true;
+  } else {
     esp_restart();
+  }
+}
+
+// =====  WiFi UPDATE  =====
+void checkWiFiStatus() {
+  wl_status_t status = WiFi.status();
+
+  if (status == WL_CONNECTED) {
+    wifiLostTime = 0;  // всё ок
+    return;
+  }
+
+  if (apMode) return;  // если уже AP, ничего не делаем
+
+  // если впервые потеряли соединение — запоминаем время
+  if (wifiLostTime == 0) {
+    wifiLostTime = millis();
+    return;
+  }
+
+  // прошло больше 10 секунд — пробуем снова подключиться
+  if (millis() - wifiLostTime >= wifiRetryWindow) {
+    digitalWrite(STATUS_LED_PIN, LOW);
+
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    
+    send_dmx();
+
+    unsigned long retryStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - retryStart < startTimeoutConnetion) {
+      delay(100);
+      send_dmx();
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      startAccessPoint();
+    } else {
+      wifiLostTime = 0;
+    }
+  }
+}
+
+// ===== LED CONTROL =====
+void updateStatusLed() {
+  unsigned long now = millis();
+
+  // Меняем поведение в зависимости от состояния
+  if (WiFi.status() == WL_CONNECTED) {
+    // ✅ STA подключен — постоянный свет
+    digitalWrite(STATUS_LED_PIN, HIGH);
+  }
+  else if (apMode) {
+    // 📡 В режиме AP — мигает медленно (раз в 1 секунду)
+    if (now - lastLedUpdate > 1000) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED_PIN, ledState);
+      lastLedUpdate = now;
+    }
+  }
+  else {
+    // ❌ Нет соединения и не AP — мигает быстро
+    if (now - lastLedUpdate > 200) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED_PIN, ledState);
+      lastLedUpdate = now;
+    }
   }
 }
 
 // ==== SETUP ====
 void setup() {
-  Serial.begin(115200);
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, HIGH);
+
   delay(200);
 
   // Подключение к WiFi
@@ -119,13 +205,18 @@ void setup() {
 
   // DMX старт-код
   dmx_data[0] = 0x00;
+
+  digitalWrite(STATUS_LED_PIN, LOW);
+  delay(200);
 }
 
 // ==== LOOP ====
 void loop() {
+  updateStatusLed();
   loopCounter++;
   if (loopCounter >= LOOP_CHECK_POINT) {
     ArduinoOTA.handle();
+    checkWiFiStatus();
     loopCounter = 0;
   }
 
@@ -147,5 +238,4 @@ void loop() {
   }
 
   send_dmx();
-  delay(33);
 }
