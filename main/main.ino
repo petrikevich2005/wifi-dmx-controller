@@ -4,17 +4,16 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_system.h"
+#include <EEPROM.h>
+#include <WebServer.h>
 
 // ==== НАСТРОЙКИ ====
-#define DEVICE_INDEX 1 // номер устройства  |  влияет на приоритет STA / AP
+#define EEPROM_SIZE 512 // размер EEPROM
+#define RESET_PIN GPIO_NUM_12
 
 //WIFI SETTINGS
-const char* ssid = "grace_light";
-const char* password = "grace_dmx512";
 bool apMode = false;
 unsigned long wifiLostTime = 0;
-const unsigned long wifiRetryWindow = 10000;  // 10 секунд
-const unsigned long startTimeoutConnetion = 4000;
 
 // LED SETTINGS
 #define STATUS_LED_PIN GPIO_NUM_2
@@ -29,15 +28,74 @@ unsigned long lastLedUpdate = 0;
 #define DMX_PACKET_SIZE  (1 + DMX_CHANNELS)  // старт-код + 512 каналов
 
 //ART_NET SETTINGS
-#define ART_NET_PORT     6454
-#define ART_NET_ID       "Art-Net\0"
 #define ART_DMX_OPCODE   0x5000
 
 uint8_t dmx_data[DMX_PACKET_SIZE] = {0};
 WiFiUDP Udp;
 
-#define LOOP_CHECK_POINT 50
 int loopCounter = 0;
+
+WebServer server(80);
+
+// reset settings
+void checkResetButton() {
+  pinMode(RESET_PIN, INPUT_PULLUP);
+  if (digitalRead(RESET_PIN) == LOW) {
+    delay(500);  // защита от случайного срабатывания
+    if (digitalRead(RESET_PIN) == LOW) {
+      for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0xFF);
+      EEPROM.commit();
+      ESP.restart();
+    }
+  }
+}
+
+
+// структура данных для сохранения в EEPROM
+struct Config {
+  char ssid[32];
+  char password[32];
+  uint16_t artnet_port;
+  char artnet_id[12];
+  uint16_t universe;
+  uint32_t loop_check_point;
+  uint32_t wifiRetryWindow;
+  uint32_t startTimeoutConnetion;
+  IPAddress local_ip;
+  IPAddress gateway;
+  IPAddress subnet;
+  uint8_t device_index;
+};
+
+Config config;
+
+// загружаем данные
+void loadConfig() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.get(0, config);
+  if (strlen(config.ssid) == 0 || config.ssid[0] == 0xFF) {
+    // Устанавливаем значения по умолчанию
+    strcpy(config.ssid, "grace_light");
+    strcpy(config.password, "grace_dmx512");
+    config.artnet_port = 6454;
+    strcpy(config.artnet_id, "Art-Net\0");
+    config.universe = 0;
+    config.loop_check_point = 50;
+    config.wifiRetryWindow = 10000;
+    config.startTimeoutConnetion = 4000;
+    config.local_ip = IPAddress(192, 168, 0, 1);
+    config.gateway = IPAddress(192, 168, 0, 1);
+    config.subnet = IPAddress(255, 255, 255, 0);
+    config.device_index = 1;
+    saveConfig();
+  }
+}
+
+// запись в EEPROM
+void saveConfig() {
+  EEPROM.put(0, config);
+  EEPROM.commit();
+}
 
 // ==== DMX ПЕРЕДАЧА ====
 void send_dmx() {
@@ -61,9 +119,9 @@ void send_dmx() {
 // ==== Функция подключения к WiFi с таймаутом 6 секунд ====
 bool connectToWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(config.ssid, config.password);
 
-  unsigned long timeout = startTimeoutConnetion * DEVICE_INDEX;
+  unsigned long timeout = config.startTimeoutConnetion * config.device_index;
   unsigned long startAttemptTime = millis();
 
   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < timeout) {
@@ -85,7 +143,7 @@ void startAccessPoint() {
   IPAddress subnet(255,255,255,0);
   WiFi.softAPConfig(local_ip, gateway, subnet);
 
-  bool apOk = WiFi.softAP(ssid, password);
+  bool apOk = WiFi.softAP(config.ssid, config.password);
   if (apOk) {
     apMode = true;
   } else {
@@ -111,17 +169,17 @@ void checkWiFiStatus() {
   }
 
   // прошло больше 10 секунд — пробуем снова подключиться
-  if (millis() - wifiLostTime >= wifiRetryWindow) {
+  if (millis() - wifiLostTime >= config.wifiRetryWindow) {
     digitalWrite(STATUS_LED_PIN, LOW);
 
     WiFi.disconnect();
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
+    WiFi.begin(config.ssid, config.password);
     
     send_dmx();
 
     unsigned long retryStart = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - retryStart < startTimeoutConnetion) {
+    while (WiFi.status() != WL_CONNECTED && millis() - retryStart < config.startTimeoutConnetion) {
       delay(100);
       send_dmx();
     }
@@ -133,6 +191,50 @@ void checkWiFiStatus() {
     }
   }
 }
+
+// страничка
+void handleRoot() {
+  String html = "<html><head><title>ESP Settings</title></head><body>";
+  html += "<h2>Настройки устройства</h2>";
+  html += "<form method='POST' action='/save'>";
+  html += "Device Index: <input type='number' name='device_index' value='" + String(config.device_index) + "'><br>";
+  html += "SSID: <input type='text' name='ssid' value='" + String(config.ssid) + "'><br>";
+  html += "Password: <input type='text' name='password' value='" + String(config.password) + "'><br>";
+  html += "Universe: <input type='number' name='universe' value='" + String(config.universe) + "'><br>";
+  html += "ArtNet Port: <input type='number' name='artnet_port' value='" + String(config.artnet_port) + "'><br>";
+  html += "Loop Checkpoint: <input type='number' name='loop_check_point' value='" + String(config.loop_check_point) + "'><br>";
+  html += "WiFi Retry (ms): <input type='number' name='wifiRetryWindow' value='" + String(config.wifiRetryWindow) + "'><br>";
+  html += "Connect Timeout (ms): <input type='number' name='startTimeoutConnetion' value='" + String(config.startTimeoutConnetion) + "'><br>";
+  html += "Local IP: <input type='text' name='local_ip' value='" + config.local_ip.toString() + "'><br>";
+  html += "Gateway: <input type='text' name='gateway' value='" + config.gateway.toString() + "'><br>";
+  html += "Subnet: <input type='text' name='subnet' value='" + config.subnet.toString() + "'><br>";
+  html += "<br><input type='submit' value='Save & Reboot'>";
+  html += "</form>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+// сохранить
+void handleSave() {
+  if (server.hasArg("device_index")) config.device_index = server.arg("device_index").toInt();
+  if (server.hasArg("ssid")) strncpy(config.ssid, server.arg("ssid").c_str(), sizeof(config.ssid));
+  if (server.hasArg("password")) strncpy(config.password, server.arg("password").c_str(), sizeof(config.password));
+  if (server.hasArg("universe")) config.universe = server.arg("universe").toInt();
+  if (server.hasArg("artnet_port")) config.artnet_port = server.arg("artnet_port").toInt();
+  if (server.hasArg("loop_check_point")) config.loop_check_point = server.arg("loop_check_point").toInt();
+  if (server.hasArg("wifiRetryWindow")) config.wifiRetryWindow = server.arg("wifiRetryWindow").toInt();
+  if (server.hasArg("startTimeoutConnetion")) config.startTimeoutConnetion = server.arg("startTimeoutConnetion").toInt();
+
+  if (server.hasArg("local_ip")) config.local_ip.fromString(server.arg("local_ip"));
+  if (server.hasArg("gateway")) config.gateway.fromString(server.arg("gateway"));
+  if (server.hasArg("subnet")) config.subnet.fromString(server.arg("subnet"));
+
+  saveConfig();
+  server.send(200, "text/html", "<html><body><h2>Настройки сохранены</h2><p>Перезагрузка...</p></body></html>");
+  delay(1000);
+  ESP.restart();
+}
+
 
 // ===== LED CONTROL =====
 void updateStatusLed() {
@@ -168,6 +270,8 @@ void setup() {
 
   delay(200);
 
+  loadConfig();
+
   // Подключение к WiFi
   bool connected = connectToWiFi();
   
@@ -176,12 +280,12 @@ void setup() {
   }
 
   // OTA
-  ArduinoOTA.setHostname(("esp32-artnet-" + String(DEVICE_INDEX)).c_str());
+  ArduinoOTA.setHostname(("esp32-artnet-" + String(config.device_index)).c_str());
   ArduinoOTA.setPasswordHash("3f483ade2441b07818408b62709274e2");
   ArduinoOTA.begin();
 
   // ArtNet UDP
-  Udp.begin(ART_NET_PORT);
+  Udp.begin(config.artnet_port);
 
   // RS-485 управление
   pinMode(DMX_DE_RE_PIN, OUTPUT);
@@ -192,7 +296,7 @@ void setup() {
   digitalWrite(DMX_TX_PIN, HIGH);
 
   // UART конфиг
-  uart_config_t config = {
+  uart_config_t uart_config = {
     .baud_rate = 250000,
     .data_bits = UART_DATA_8_BITS,
     .parity    = UART_PARITY_DISABLE,
@@ -200,11 +304,15 @@ void setup() {
     .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
   };
   uart_driver_install(DMX_UART_NUM, 1024, 0, 0, NULL, 0);  // буфер увеличен
-  uart_param_config(DMX_UART_NUM, &config);
+  uart_param_config(DMX_UART_NUM, &uart_config);
   uart_set_pin(DMX_UART_NUM, DMX_TX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
   // DMX старт-код
   dmx_data[0] = 0x00;
+
+  server.on("/", handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.begin();
 
   digitalWrite(STATUS_LED_PIN, LOW);
   delay(200);
@@ -214,9 +322,10 @@ void setup() {
 void loop() {
   updateStatusLed();
   loopCounter++;
-  if (loopCounter >= LOOP_CHECK_POINT) {
+  if (loopCounter >= config.loop_check_point) {
     ArduinoOTA.handle();
     checkWiFiStatus();
+    server.handleClient();
     loopCounter = 0;
   }
 
@@ -224,11 +333,11 @@ void loop() {
   if (packetSize > 0) {
     uint8_t buffer[600];  // достаточно для ArtDMX 512
     int len = Udp.read(buffer, sizeof(buffer));
-    if (len >= 18 && memcmp(buffer, ART_NET_ID, 8) == 0) {
+    if (len >= 18 && strncmp((char*)buffer, config.artnet_id, 8) == 0) {
       uint16_t opcode = buffer[8] | (buffer[9] << 8);
       if (opcode == ART_DMX_OPCODE) {
         uint16_t universe = buffer[14] | (buffer[15] << 8);
-        if (universe == 0) {
+        if (universe == config.universe) {
           uint16_t dmxLen = (buffer[16] << 8) | buffer[17];
           if (dmxLen > DMX_CHANNELS) dmxLen = DMX_CHANNELS;
           memcpy(&dmx_data[1], &buffer[18], dmxLen);  // dmx_data[0] = старт-код
