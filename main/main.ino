@@ -10,8 +10,8 @@
 esp_timer_handle_t dmx_timer;
 
 //WIFI SETTINGS
-const char* ssid = "grace_light";
-const char* password = "grace_dmx_512";
+const char* ssid = "wifi-dmx-device";
+const char* password = "grace-dmx-512";
 
 // LED SETTINGS
 #define STATUS_LED_PIN GPIO_NUM_2
@@ -97,7 +97,7 @@ void timerSetup() {
 
   // Запуск таймера с периодом 25000 мкс (25 мс = 40 Гц)
   // Запуск таймера с периодом 33000 мкс (33 мс = 30 Гц)
-  esp_timer_start_periodic(dmx_timer, 33000);
+  esp_timer_start_periodic(dmx_timer, 25000);
 }
 
 // ==== SETUP ====
