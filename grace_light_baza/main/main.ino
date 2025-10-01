@@ -40,28 +40,21 @@ void IRAM_ATTR dmx_timer_callback(void* arg) {
 
 // ==== DMX ПЕРЕДАЧА ====
 void send_dmx() {
-  // Включаем передачу через SP3485
-  gpio_set_level(DMX_DE_RE_PIN, 1);  
+  gpio_set_level(DMX_DE_RE_PIN, 1);  // Включаем передачу
 
-  // === BREAK ===
-  gpio_set_direction(DMX_TX_PIN, GPIO_MODE_OUTPUT); // отключаем UART
-  gpio_set_level(DMX_TX_PIN, 0);                     // логический 0
-  delayMicroseconds(110);                            // длительность BREAK (>88 мкс)
+  // BREAK (LOW >88 мкс)
+  gpio_set_direction(DMX_TX_PIN, GPIO_MODE_OUTPUT);
+  delayMicroseconds(110);
 
-  // === MAB (MARK AFTER BREAK) ===
-  gpio_set_level(DMX_TX_PIN, 1);                     // логическая 1
-  delayMicroseconds(12);                             // длительность MAB (≥8 мкс)
+  // MAB (MARK AFTER BREAK)
+  delayMicroseconds(12);
 
-  // === Передача пакета ===
-  uart_set_pin(DMX_UART_NUM, DMX_TX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // возвращаем UART
+  // Назад в UART
+  uart_set_pin(DMX_UART_NUM, DMX_TX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
   uart_write_bytes(DMX_UART_NUM, (const char*)dmx_data, DMX_PACKET_SIZE);
-  uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(10)); // ждём завершения передачи
+  uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(10));
 
-  // === Межкадровая пауза (Inter-frame gap) ===
-  delayMicroseconds(44); // минимум 44 мкс между фреймами по DMX-стандарту
-
-  // Выключаем передачу
-  gpio_set_level(DMX_DE_RE_PIN, 0);  
+  gpio_set_level(DMX_DE_RE_PIN, 0);  // Выключаем передачу
 }
 
 // ==== Создание точки доступа с фиксированным IP ====
