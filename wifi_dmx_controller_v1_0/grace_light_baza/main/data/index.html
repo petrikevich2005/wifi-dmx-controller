@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 WiFi DMX Controller</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #c7ff89;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    .container {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      padding: 15px;
+      margin: 10px;
+      flex: 1;
+      min-width: 280px;
+    }
+    .card h2 {
+      font-size: 1.2em;
+      margin-top: 0;
+    }
+    label {
+      display: block;
+      margin: 8px 0 3px;
+      font-weight: bold;
+    }
+    input[type="text"], input[type="password"], input[type="number"], select {
+      width: 100%;
+      padding: 6px;
+      margin-bottom: 10px;
+      border: 1px solid #888;
+      border-radius: 5px;
+    }
+    button {
+      padding: 8px 15px;
+      margin: 5px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      background: #4CAF50;
+      color: white;
+      font-weight: bold;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    .slider-block {
+      margin: 8px 0;
+      display: flex;
+      align-items: center;
+    }
+    .slider-block span {
+      width: 30px;
+      display: inline-block;
+    }
+    .slider-block input[type="range"] {
+      flex: 1;
+      margin: 0 10px;
+    }
+    .slider-value {
+      width: 40px;
+      text-align: right;
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      margin: 5px 0;
+    }
+    .toggle input {
+      display: none;
+    }
+    .toggle label {
+      background: #999;
+      border-radius: 15px;
+      cursor: pointer;
+      display: inline-block;
+      width: 60px;
+      height: 30px;
+      position: relative;
+    }
+    .toggle label::after {
+      content: "";
+      width: 26px;
+      height: 26px;
+      background: white;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: 0.3s;
+    }
+    .toggle input:checked + label {
+      background: #4CAF50;
+    }
+    .toggle input:checked + label::after {
+      transform: translateX(30px);
+    }
+  </style>
+</head>
+<body>
+  <h1>ESP32 WiFi DMX Controller</h1>
+  
+  <div class="container">
+    <!-- Settings -->
+    <div class="card">
+      <h2>Settings</h2>
+      <label>SSID:</label>
+      <input type="text" id="ssid">
+      <label>Password:</label>
+      <input type="password" id="password">
+      <label>Universe:</label>
+      <input type="number" id="universe" min="0" max="32767">
+      <label>Update Code:</label>
+      <input type="password" id="updateCode">
+      <div>
+        <button onclick="saveSettings()">Save</button>
+        <button onclick="restartDevice()">Restart</button>
+      </div>
+    </div>
+
+    <!-- Scenes -->
+    <div class="card">
+      <h2>Scenes</h2>
+      <div>
+        <button onclick="loadScene(1)">1</button>
+        <button onclick="loadScene(2)">2</button>
+        <button onclick="loadScene(3)">3</button>
+        <button onclick="loadScene(4)">4</button>
+        <button onclick="loadScene(5)">5</button>
+        <button onclick="loadScene(6)">6</button>
+        <button onclick="loadScene(7)">7</button>
+        <button onclick="loadScene(8)">8</button>
+      </div>
+      <label>Save to:</label>
+      <select id="sceneSelect">
+        <option value="1">Scene 1</option>
+        <option value="2">Scene 2</option>
+        <option value="3">Scene 3</option>
+        <option value="4">Scene 4</option>
+        <option value="5">Scene 5</option>
+        <option value="6">Scene 6</option>
+        <option value="7">Scene 7</option>
+        <option value="8">Scene 8</option>
+      </select>
+      <button onclick="saveScene()">Save Scene</button>
+    </div>
+
+    <!-- Web Control -->
+    <div class="card" style="flex: 2">
+      <h2>
+        Web Control
+        <span class="toggle">
+          <input type="checkbox" id="controlToggle" onchange="toggleControl(this)">
+          <label for="controlToggle"></label>
+        </span>
+      </h2>
+      
+      <div style="display: flex; flex-wrap: wrap;">
+        <div style="flex:1; min-width: 220px; margin-right: 20px;">
+          <h3>Center</h3>
+          <div id="centerSliders"></div>
+        </div>
+        <div style="flex:1; min-width: 220px;">
+          <h3>Side</h3>
+          <div id="sideSliders"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const channelLabels = ["D","R","G","B","A","C","L","CTC","Z","S","F"];
+
+    function createSliders(containerId, prefix) {
+      let container = document.getElementById(containerId);
+      channelLabels.forEach((label,i)=>{
+        let div = document.createElement("div");
+        div.className = "slider-block";
+        div.innerHTML = `
+          <span>${label}:</span>
+          <input type="range" id="${prefix}${i}" min="0" max="255" value="0" 
+                 oninput="updateValue('${prefix}${i}')">
+          <span class="slider-value" id="${prefix}${i}Val">0</span>
+        `;
+        container.appendChild(div);
+      });
+    }
+    createSliders("centerSliders","c");
+    createSliders("sideSliders","s");
+
+    function updateValue(id) {
+      document.getElementById(id+"Val").innerText = 
+        document.getElementById(id).value;
+      // тут можно сразу слать на ESP
+    }
+
+    function saveSettings() {
+      let data = {
+        ssid: document.getElementById("ssid").value,
+        password: document.getElementById("password").value,
+        universe: document.getElementById("universe").value,
+        updateCode: document.getElementById("updateCode").value
+      };
+      fetch("/saveSettings", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(data)
+      });
+    }
+
+    function restartDevice() {
+      fetch("/restart");
+    }
+
+    function toggleControl(el) {
+      fetch("/setMode", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({mode: el.checked ? "web":"artnet"})
+      });
+    }
+
+    function saveScene() {
+      let scene = document.getElementById("sceneSelect").value;
+      let values = {};
+      channelLabels.forEach((_,i)=>{
+        values["c"+i] = document.getElementById("c"+i).value;
+        values["s"+i] = document.getElementById("s"+i).value;
+      });
+      fetch("/saveScene", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({scene: scene, values: values})
+      });
+    }
+
+    function loadScene(n) {
+      fetch("/loadScene?scene="+n)
+        .then(res=>res.json())
+        .then(data=>{
+          for (let key in data) {
+            if(document.getElementById(key)) {
+              document.getElementById(key).value = data[key];
+              updateValue(key);
+            }
+          }
+        });
+    }
+  </script>
+</body>
+</html>

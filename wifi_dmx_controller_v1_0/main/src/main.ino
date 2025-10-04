@@ -1,17 +1,26 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include <EEPROM.h>
+#include "SPIFFS.h"
+#include <WebServer.h>
+#include <ArduinoJson.h>
 
 // TIMER INIT
 esp_timer_handle_t dmx_timer;
 
-//WIFI SETTINGS
-const char* ssid = "wifi-dmx-device";
-const char* password = "grace-dmx-512";
+// EEPROM
+#define EEPROM_SIZE 512
+#define RESET_PIN GPIO_NUM_12  // пин сброса EEPROM
+struct Settings {
+  char ssid[32];
+  char password[32];
+  uint16_t universe;
+};
+Settings settings;
 
 // LED SETTINGS
 #define STATUS_LED_PIN GPIO_NUM_2
@@ -33,6 +42,34 @@ unsigned long lastLedUpdate = 0;
 uint8_t dmx_data[DMX_PACKET_SIZE] = {0};
 WiFiUDP Udp;
 
+// WEB SERVER
+WebServer server(80);
+#define ACCESS_CODE "secret"
+
+// ==== Загрузка настроек из EEPROM ====
+void loadSettings() {
+  EEPROM.get(0, settings);
+
+  // Проверка: если пусто или битые данные → дефолт
+  if (strlen(settings.ssid) == 0 || strlen(settings.password) == 0) {
+    setDefaultSettings();
+  }
+}
+
+// ==== Сохранение настроек ====
+void saveSettings() {
+  EEPROM.put(0, settings);
+  EEPROM.commit();
+}
+
+// ==== Настройки по умолчанию ====
+void setDefaultSettings() {
+  strcpy(settings.ssid, "WIFI-DMX-Controller");
+  strcpy(settings.password, "123456789");
+  settings.universe = 0;
+  saveSettings();
+}
+
 // === TIMER CALLBACK ===
 void IRAM_ATTR dmx_timer_callback(void* arg) {
   send_dmx();
@@ -53,7 +90,6 @@ void send_dmx() {
   delayMicroseconds(12);                             // длительность MAB (≥8 мкс)
 
   // === Передача пакета ===
-  uart_set_pin(DMX_UART_NUM, DMX_TX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // возвращаем UART
   uart_write_bytes(DMX_UART_NUM, (const char*)dmx_data, DMX_PACKET_SIZE);
   uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(10)); // ждём завершения передачи
 
@@ -74,9 +110,93 @@ void startAccessPoint() {
   IPAddress subnet(255,255,255,0);
   WiFi.softAPConfig(local_ip, gateway, subnet);
 
-  bool apOk = WiFi.softAP(ssid, password);
+  bool apOk = WiFi.softAP(settings.ssid, settings.password);
   if (!apOk) {
     esp_restart();
+  }
+}
+
+// ==== Поднимаем WEB сервер ====
+void startWebServer() {
+  SPIFFS.begin(true);
+  server.on("/", HTTP_GET, [](){
+    File f = SPIFFS.open("/index.html", "r");
+    server.streamFile(f, "text/html");
+    f.close();
+  });
+
+  // === Обработка /saveSettings ===
+  server.on("/saveSettings", HTTP_POST, [](){
+    if(server.hasArg("plain") == false){
+      server.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"No data\"}");
+      return;
+    }
+
+    // Читаем тело POST запроса
+    String body = server.arg("plain");
+
+    // JSON парсинг
+    StaticJsonDocument<1024> doc;
+    DeserializationError error = deserializeJson(doc, body);
+    if(error){
+      server.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Invalid JSON\"}");
+      return;
+    }
+
+    const char* ssid = doc["ssid"];
+    const char* password = doc["password"];
+    const char* accessCode = doc["accessCode"];
+    int universe = doc["universe"];
+
+    // Проверка access code
+    if(strcmp(accessCode, ACCESS_CODE) != 0){
+      server.send(403, "application/json", "{\"status\":\"error\",\"msg\":\"Wrong access code\"}");
+      return;
+    }
+
+    // Минимальная проверка данных
+    if(strlen(ssid) == 0 || strlen(password) < 8 || universe < 0 || universe > 32){
+      server.send(400, "application/json", "{\"status\":\"error\",\"msg\":\"Invalid data\"}");
+      return;
+    }
+
+    // Сохраняем в EEPROM
+    strncpy(settings.ssid, ssid, sizeof(settings.ssid)-1);
+    settings.ssid[sizeof(settings.ssid)-1] = 0;
+
+    strncpy(settings.password, password, sizeof(settings.password)-1);
+    settings.password[sizeof(settings.password)-1] = 0;
+
+    settings.universe = universe;
+
+    saveSettings();
+
+    server.send(200, "application/json", "{\"status\":\"ok\",\"msg\":\"Settings saved! Restarting...\"}");
+
+    delay(5); // короткая пауза
+    ESP.restart(); // перезагрузка для применения настроек
+  });
+
+  server.on("/restart", HTTP_POST, [](){
+    server.send(200, "application/json", "{\"status\":\"ok\",\"msg\":\"Restarting\"}");
+    delay(5);
+    ESP.restart();
+  });
+
+  server.begin();
+}
+
+// ===  RESET SETTINGS  ===
+void resetSettings() {
+  pinMode(RESET_PIN, INPUT_PULLUP);
+  if (digitalRead(RESET_PIN) == LOW) {
+    setDefaultSettings();
+    for (int i=0; i<3; i++) {
+      digitalWrite(STATUS_LED_PIN, LOW);
+      delay(200);
+      digitalWrite(STATUS_LED_PIN, HIGH);
+    }
+    ESP.restart();
   }
 }
 
@@ -97,7 +217,7 @@ void timerSetup() {
 
   // Запуск таймера с периодом 25000 мкс (25 мс = 40 Гц)
   // Запуск таймера с периодом 33000 мкс (33 мс = 30 Гц)
-  esp_timer_start_periodic(dmx_timer, 25000);
+  esp_timer_start_periodic(dmx_timer, 33000);
 }
 
 // ==== SETUP ====
@@ -105,15 +225,18 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
+  EEPROM.begin(EEPROM_SIZE);
+
+  // === Reset pin check ===
+  resetSettings();
+
   delay(5);
+
+  // Загружаем настройки
+  loadSettings();
 
   // Поднимаем точку
   startAccessPoint();
-
-  // OTA
-  ArduinoOTA.setHostname("esp32-artnet-controller");
-  ArduinoOTA.setPasswordHash("047cee0d91209df5502287877359d3aa");
-  ArduinoOTA.begin();
 
   // ArtNet UDP
   Udp.begin(ART_NET_PORT);
@@ -141,6 +264,9 @@ void setup() {
   // DMX старт-код
   dmx_data[0] = 0x00;
 
+  // WEB SERVER
+  startWebServer();
+
   digitalWrite(STATUS_LED_PIN, LOW);
   delay(2);
   timerSetup();
@@ -157,7 +283,7 @@ void getArtnetData() {
       uint16_t opcode = buffer[8] | (buffer[9] << 8);
       if (opcode == ART_DMX_OPCODE) {
         uint16_t universe = buffer[14] | (buffer[15] << 8);
-        if (universe == 0) {
+        if (universe == settings.universe) {
           uint16_t dmxLen = (buffer[16] << 8) | buffer[17];
           if (dmxLen > DMX_CHANNELS) dmxLen = DMX_CHANNELS;
           memcpy(&dmx_data[1], &buffer[18], dmxLen);  // dmx_data[0] = старт-код
@@ -169,6 +295,6 @@ void getArtnetData() {
 
 // ==== LOOP ====
 void loop() {
-  ArduinoOTA.handle();
+  server.handleClient();
   getArtnetData();
 }
