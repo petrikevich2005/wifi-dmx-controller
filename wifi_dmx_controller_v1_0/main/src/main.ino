@@ -44,7 +44,7 @@ WiFiUDP Udp;
 
 // WEB SERVER
 WebServer server(80);
-#define ACCESS_CODE "secret"
+#define ACCESS_CODE "grace_tech_team"
 
 // ==== Загрузка настроек из EEPROM ====
 void loadSettings() {
