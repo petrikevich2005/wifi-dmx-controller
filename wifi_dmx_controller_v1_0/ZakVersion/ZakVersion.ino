@@ -26,7 +26,7 @@ const char ART_NET_ID[] = "Art-Net\0";
 #define ART_DMX_OPCODE   0x5000
 
 // тайминги и таймеры
-#define WIFI_CONNECT_TIMEOUT_MS 20000UL
+#define WIFI_CONNECT_TIMEOUT_MS 15000UL
 #define DMX_PERIOD_US           33000UL  // 33 ms ~30Hz
 
 // защита сохранения веба
@@ -48,6 +48,8 @@ bool ledState = false;
 
 volatile unsigned long lastModeInterrupt = 0;
 unsigned long last_eeprom_reset_press = 0;
+
+unsigned long lastCheck = 0;
 
 uint16_t configured_universe = 0;
 String saved_ssid = "WIFI-DMX-Controller";
@@ -87,6 +89,11 @@ bool wasButtonPressedDebounced(uint8_t pin) {
 
 // ===================== SETUP =====================
 void setup() {
+  // Отладка
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== Controller started ===");
+
   // Сохранённые настройки
   prefs.begin("wifidmx", false);
   loadSettings();
@@ -101,6 +108,7 @@ void setup() {
 
   // если EEPROM_RESET нажата при старте -> очистить prefs
   if (digitalRead(EEPROM_RESET_PIN) == LOW) {
+    digitalWrite(STATUS_LED_PIN, HIGH);
     unsigned long t0 = millis();
     // держите кнопку 1.5 сек чтобы подтвердить reset
     while (digitalRead(EEPROM_RESET_PIN) == LOW) {
@@ -111,6 +119,7 @@ void setup() {
       }
       delay(10);
     }
+    digitalWrite(STATUS_LED_PIN, LOW);
   }
 
   // MODE switch: если зажат при старте - принудительно AP
@@ -233,10 +242,8 @@ void startStationMode() {
     delay(200);
     updateLedPattern();
     if (millis() - startAttemptTime > WIFI_CONNECT_TIMEOUT_MS) {
-      // не подключились — падаем в AP
-      isAPMode = true;
-      startAccessPoint();
-      return;
+      // не подключились — перезагрузка
+      esp_restart();
     }
   }
 }
@@ -340,25 +347,24 @@ void getArtnetData() {
 // ===================== LED PATTERNS =====================
 void updateLedPattern() {
   unsigned long now = millis();
-  // приём ArtNet — быстрый морг (handled inline при получении)
   // режимы:
   if (isAPMode) {
-    // AP: длинный blink 500ms on / 500ms off
-    if (now - lastLedUpdate >= 500) {
+    // AP: длинный blink 2000ms on / 2000ms off
+    if (now - lastLedUpdate >= 2000) {
       ledState = !ledState;
       digitalWrite(STATUS_LED_PIN, ledState ? HIGH : LOW);
       lastLedUpdate = now;
     }
   } else {
-    // STA: короткие blinks 100ms on / 400ms off
+    // STA: короткие blinks 500ms on / 500ms off
     if (ledState) {
-      if (now - lastLedUpdate >= 100) {
+      if (now - lastLedUpdate >= 500) {
         ledState = false;
         digitalWrite(STATUS_LED_PIN, LOW);
         lastLedUpdate = now;
       }
     } else {
-      if (now - lastLedUpdate >= 400) {
+      if (now - lastLedUpdate >= 500) {
         ledState = true;
         digitalWrite(STATUS_LED_PIN, HIGH);
         lastLedUpdate = now;
@@ -378,8 +384,8 @@ void checkConnection() {
         updateLedPattern();
       }
       if (WiFi.status() != WL_CONNECTED) {
-        // перезапуск чтобы восстановить работу
-        esp_restart();
+        WiFi.disconnect();
+        WiFi.reconnect();
       }
     }
   }
@@ -387,18 +393,30 @@ void checkConnection() {
 
 // ===================== LOOP =====================
 void loop() {
-  // web server handling
-  server.handleClient();
-
+  unsigned long t0 = micros(); // старт времени
   // ArtNet приём
   getArtnetData();
+  unsigned long t1 = micros();
 
-  // проверка соединения / арнет таймаут
-  checkConnection();
+  if (millis() - lastCheck > 500) {
+    unsigned long t2 = micros();
+    // web server handling
+    //server.handleClient();
+    unsigned long t3 = micros();
+    // проверка соединения
+    checkConnection();
+    unsigned long t4 = micros();
+    // обновление индикатора
+    updateLedPattern();
+    unsigned long t5 = micros();
 
-  // обновление индикатора
-  updateLedPattern();
+    // выводим статистику
+    Serial.print("getArtnetData: "); Serial.print(t1 - t0);
+    Serial.print(" us | server.handleClient: "); Serial.print(t3 - t2);
+    Serial.print(" us | checkConnection: "); Serial.print(t4 - t3);
+    Serial.print(" us | updateLedPattern: "); Serial.print(t5 - t4);
+    Serial.print(" us | total loop: "); Serial.println(t5 - t0);
 
-  // небольшая пауза главного цикла
-  delay(10);
+    lastCheck = millis();
+  }
 }
