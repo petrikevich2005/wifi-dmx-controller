@@ -1,4 +1,4 @@
-// DMX_UART_NUM 1, DMX_TX_PIN 17, DMX_DE_RE_PIN 4, STATUS_LED_PIN 2, MODE_SWITCH_PIN 32, EEPROM_RESET_PIN 12
+// DMX_UART_NUM 1, DMX_TX_PIN 17, DMX_DE_RE_PIN 4, STATUS_LED_PIN 2, MODE_SWITCH_PIN 32, RECOVERY_PIN 12
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -16,7 +16,7 @@
 
 #define STATUS_LED_PIN   GPIO_NUM_2
 #define MODE_SWITCH_PIN  GPIO_NUM_32
-#define EEPROM_RESET_PIN GPIO_NUM_12
+#define RECOVERY_PIN GPIO_NUM_12
 
 #define DMX_CHANNELS     512
 #define DMX_PACKET_SIZE  (1 + DMX_CHANNELS)  // старт-код + 512 каналов
@@ -30,7 +30,7 @@ const char ART_NET_ID[] = "Art-Net\0";
 #define DMX_PERIOD_US           33000UL  // 33 ms ~30Hz
 
 // защита сохранения веба
-#define DEFAULT_ACCESS_CODE "2030a"
+#define ACCESS_CODE "1736"
 
 // ===================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====================
 uint8_t dmx_data[DMX_PACKET_SIZE] = {0};
@@ -41,22 +41,17 @@ WebServer server(80);
 Preferences prefs;
 
 bool isAPMode = false;
+bool recovery_mode = false;
 
 unsigned long lastLedUpdate = 0;
-unsigned long lastLedBlinkInterval = 500;
 bool ledState = false;
-
-volatile unsigned long lastModeInterrupt = 0;
-unsigned long last_eeprom_reset_press = 0;
-
-unsigned long lastCheck = 0;
 
 uint16_t configured_universe = 0;
 String saved_ssid = "WIFI-DMX-Controller";
 String saved_pass = "123456789";
-String saved_access_code = DEFAULT_ACCESS_CODE;
 
 // ===================== ПРОТОТИПЫ =====================
+void startRecoveryAccessPoint();
 void startAccessPoint();
 void startStationMode();
 void timerSetup();
@@ -67,101 +62,76 @@ void handleSave();
 void handleRestart();
 void handleGetSettings();
 void loadSettings();
-void clearSettings();
 void setupUART();
 void updateLedPattern();
 void getArtnetData();
 void checkConnection();
 
-// ===================== HELPERS =====================
-bool wasButtonPressedDebounced(uint8_t pin) {
-  static unsigned long lastPressTime[40] = {0};
-  int idx = pin % 40;
-  if (digitalRead(pin) == LOW) {
-    unsigned long now = millis();
-    if (now - lastPressTime[idx] > 200) { // 200 ms debounce
-      lastPressTime[idx] = now;
-      return true;
-    }
-  }
-  return false;
-}
-
 // ===================== SETUP =====================
 void setup() {
-  // Отладка
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n=== Controller started ===");
-
   // Сохранённые настройки
   prefs.begin("wifidmx", false);
   loadSettings();
 
   // начальная индикация
   pinMode(STATUS_LED_PIN, OUTPUT);
-  digitalWrite(STATUS_LED_PIN, LOW);
+  digitalWrite(STATUS_LED_PIN, HIGH);
 
   // кнопки
   pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(EEPROM_RESET_PIN, INPUT_PULLUP);
+  pinMode(RECOVERY_PIN, INPUT_PULLUP);
 
-  // если EEPROM_RESET нажата при старте -> очистить prefs
-  if (digitalRead(EEPROM_RESET_PIN) == LOW) {
-    digitalWrite(STATUS_LED_PIN, HIGH);
-    unsigned long t0 = millis();
-    // держите кнопку 1.5 сек чтобы подтвердить reset
-    while (digitalRead(EEPROM_RESET_PIN) == LOW) {
-      if (millis() - t0 > 1500) {
-        clearSettings();
-        delay(200);
-        esp_restart();
-      }
-      delay(10);
+  // если RECOVERY нажата при старте -> RECOVERY_MODE
+  if (digitalRead(RECOVERY_PIN) == LOW) {
+    recovery_mode = true;
+  }
+
+  // recovery_mode
+  if (recovery_mode) {
+    // startRecoveryAccessPoint
+    startRecoveryAccessPoint();
+    // WebServer роуты (работают как в AP, так и в STA)
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/save", HTTP_POST, handleSave);
+    server.on("/restart", HTTP_POST, handleRestart);
+    server.on("/settings", HTTP_GET, handleGetSettings);
+    server.begin();
+  } else {
+    // MODE switch: если зажат при старте - AP
+    if (digitalRead(MODE_SWITCH_PIN) == LOW) {
+      isAPMode = true;
+    } else {
+      isAPMode = false;
     }
-    digitalWrite(STATUS_LED_PIN, LOW);
+
+    // UART / RS485 DE/RE
+    pinMode(DMX_DE_RE_PIN, OUTPUT);
+    digitalWrite(DMX_DE_RE_PIN, LOW);
+
+    // TX pin по умолчанию HIGH (idle)
+    pinMode(DMX_TX_PIN, OUTPUT);
+    digitalWrite(DMX_TX_PIN, HIGH);
+
+    setupUART();
+
+    // DMX старт-код
+    dmx_data[0] = 0x00;
+
+    // WiFi
+    if (isAPMode) {
+      startAccessPoint();
+    } else {
+      startStationMode();
+    }
+
+    // UDP
+    Udp.begin(ART_NET_PORT);
+
+    // таймер DMX
+    timerSetup();
   }
 
-  // MODE switch: если зажат при старте - принудительно AP
-  if (digitalRead(MODE_SWITCH_PIN) == LOW) {
-    isAPMode = true;
-  } else {
-    isAPMode = false;
-  }
-
-  // UART / RS485 DE/RE
-  pinMode(DMX_DE_RE_PIN, OUTPUT);
-  digitalWrite(DMX_DE_RE_PIN, LOW);
-
-  // TX pin по умолчанию HIGH (idle)
-  pinMode(DMX_TX_PIN, OUTPUT);
-  digitalWrite(DMX_TX_PIN, HIGH);
-
-  setupUART();
-
-  // DMX старт-код
-  dmx_data[0] = 0x00;
-
-  // WiFi
-  if (isAPMode) {
-    startAccessPoint();
-  } else {
-    startStationMode();
-  }
-
-  // UDP
-  Udp.begin(ART_NET_PORT);
-
-  // таймер DMX
-  timerSetup();
-
-  // WebServer роуты (работают как в AP, так и в STA)
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/save", HTTP_POST, handleSave);
-  server.on("/restart", HTTP_POST, handleRestart);
-  server.on("/settings", HTTP_GET, handleGetSettings);
-  server.begin();
-
+  digitalWrite(STATUS_LED_PIN, LOW);
 }
 
 // ===================== UART / DMX =====================
@@ -225,6 +195,15 @@ void timerSetup() {
 }
 
 // ===================== WiFi MODEs =====================
+void startRecoveryAccessPoint() {
+  WiFi.mode(WIFI_AP);
+  IPAddress local_ip(192,168,0,1);
+  IPAddress gateway(192,168,0,1);
+  IPAddress subnet(255,255,255,0);
+  WiFi.softAPConfig(local_ip, gateway, subnet);
+  WiFi.softAP("ESP_WIFI_DMX_RECOVERY", "123456789");
+}
+
 void startAccessPoint() {
   WiFi.mode(WIFI_AP);
   IPAddress local_ip(192,168,0,1);
@@ -278,7 +257,7 @@ void handleSave() {
     return;
   }
   String code = server.arg("code");
-  if (code != saved_access_code) {
+  if (code != ACCESS_CODE) {
     server.send(401, "text/plain", "Access denied");
     return;
   }
@@ -290,7 +269,6 @@ void handleSave() {
   prefs.putString("ssid", saved_ssid);
   prefs.putString("pass", saved_pass);
   prefs.putUShort("univ", configured_universe);
-  prefs.putString("access", saved_access_code); // access code persists unless user changes via other means
 
   server.send(200, "text/plain", "Saved, restarting...");
   delay(200);
@@ -308,19 +286,6 @@ void loadSettings() {
   saved_ssid = prefs.getString("ssid", saved_ssid);
   saved_pass = prefs.getString("pass", saved_pass);
   configured_universe = prefs.getUShort("univ", configured_universe);
-  saved_access_code = prefs.getString("access", DEFAULT_ACCESS_CODE);
-}
-
-void clearSettings() {
-  prefs.clear();
-  saved_ssid = "WIFI-DMX-Controller";
-  saved_pass = "12345678";
-  configured_universe = 0;
-  saved_access_code = DEFAULT_ACCESS_CODE;
-  prefs.putString("ssid", saved_ssid);
-  prefs.putString("pass", saved_pass);
-  prefs.putUShort("univ", configured_universe);
-  prefs.putString("access", saved_access_code);
 }
 
 // ===================== ArtNet парсинг =====================
@@ -393,30 +358,15 @@ void checkConnection() {
 
 // ===================== LOOP =====================
 void loop() {
-  unsigned long t0 = micros(); // старт времени
-  // ArtNet приём
-  getArtnetData();
-  unsigned long t1 = micros();
-
-  if (millis() - lastCheck > 500) {
-    unsigned long t2 = micros();
+  if (recovery_mode) {
     // web server handling
-    //server.handleClient();
-    unsigned long t3 = micros();
+    server.handleClient();
+  } else {
+    // ArtNet приём
+    getArtnetData();
     // проверка соединения
     checkConnection();
-    unsigned long t4 = micros();
     // обновление индикатора
     updateLedPattern();
-    unsigned long t5 = micros();
-
-    // выводим статистику
-    Serial.print("getArtnetData: "); Serial.print(t1 - t0);
-    Serial.print(" us | server.handleClient: "); Serial.print(t3 - t2);
-    Serial.print(" us | checkConnection: "); Serial.print(t4 - t3);
-    Serial.print(" us | updateLedPattern: "); Serial.print(t5 - t4);
-    Serial.print(" us | total loop: "); Serial.println(t5 - t0);
-
-    lastCheck = millis();
   }
 }
