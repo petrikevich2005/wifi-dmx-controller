@@ -42,6 +42,7 @@ Preferences prefs;
 
 bool isAPMode = false;
 bool recovery_mode = false;
+bool use_static_ip = false;
 
 unsigned long lastLedUpdate = 0;
 bool ledState = false;
@@ -49,6 +50,10 @@ bool ledState = false;
 uint16_t configured_universe = 0;
 String saved_ssid = "WIFI-DMX-Controller";
 String saved_pass = "123456789";
+
+IPAddress saved_local_ip(192,168,0,50);
+IPAddress saved_gateway(192,168,0,1);
+IPAddress saved_subnet(255,255,255,0);
 
 // ===================== ПРОТОТИПЫ =====================
 void startRecoveryAccessPoint();
@@ -201,20 +206,32 @@ void startRecoveryAccessPoint() {
   IPAddress gateway(192,168,0,1);
   IPAddress subnet(255,255,255,0);
   WiFi.softAPConfig(local_ip, gateway, subnet);
-  WiFi.softAP("ESP_WIFI_DMX_RECOVERY", "123456789");
+  WiFi.softAP("ESP_WIFI_DMX_RECOVERY", "12345678");
 }
 
 void startAccessPoint() {
   WiFi.mode(WIFI_AP);
-  IPAddress local_ip(192,168,0,1);
-  IPAddress gateway(192,168,0,1);
-  IPAddress subnet(255,255,255,0);
-  WiFi.softAPConfig(local_ip, gateway, subnet);
+  WiFi.softAPConfig(saved_local_ip, saved_gateway, saved_subnet);
   WiFi.softAP(saved_ssid.c_str(), saved_pass.c_str());
 }
 
 void startStationMode() {
   WiFi.mode(WIFI_STA);
+
+  if (use_static_ip) {
+    if (!WiFi.config(saved_local_ip, saved_gateway, saved_subnet)) {
+      digitalWrite(STATUS_LED_PIN, HIGH);
+      delay(200);
+      digitalWrite(STATUS_LED_PIN, LOW);
+      delay(200);
+      digitalWrite(STATUS_LED_PIN, HIGH);
+      delay(200);
+      digitalWrite(STATUS_LED_PIN, LOW);
+      delay(10);
+      esp_restart();
+    }
+  }
+
   WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
   unsigned long startAttemptTime = millis();
   while (WiFi.status() != WL_CONNECTED) {
@@ -235,6 +252,15 @@ void handleRoot() {
   page += "SSID:<br><input name='ssid' value='" + saved_ssid + "'><br>";
   page += "Password:<br><input name='pass' value='" + saved_pass + "'><br>";
   page += "Universe:<br><input name='universe' value='" + String(configured_universe) + "'><br>";
+  page += "<h3>WiFi Settings</h3>";
+  page += "Mode:<br><select name='ip_mode'>";
+  page += "<option value='dynamic'" + String(use_static_ip ? "" : " selected") + ">Dynamic (DHCP)</option>";
+  page += "<option value='static'" + String(use_static_ip ? " selected" : "") + ">Static</option>";
+  page += "</select><br><br>";
+
+  page += "Local IP:<br><input name='local_ip' value='" + saved_local_ip.toString() + "'><br>";
+  page += "Gateway:<br><input name='gateway' value='" + saved_gateway.toString() + "'><br>";
+  page += "Subnet:<br><input name='subnet' value='" + saved_subnet.toString() + "'><br>";
   page += "Access code (required to save):<br><input name='code' value=''><br><br>";
   page += "<button type='submit'>Save & Restart</button>";
   page += "</form>";
@@ -270,6 +296,13 @@ void handleSave() {
   prefs.putString("pass", saved_pass);
   prefs.putUShort("univ", configured_universe);
 
+  bool staticFlag = server.arg("ip_mode") == "static";
+
+  prefs.putBool("static_ip", staticFlag);
+  prefs.putString("local_ip", server.arg("local_ip"));
+  prefs.putString("gateway", server.arg("gateway"));
+  prefs.putString("subnet", server.arg("subnet"));
+
   server.send(200, "text/plain", "Saved, restarting...");
   delay(200);
   esp_restart();
@@ -286,6 +319,11 @@ void loadSettings() {
   saved_ssid = prefs.getString("ssid", saved_ssid);
   saved_pass = prefs.getString("pass", saved_pass);
   configured_universe = prefs.getUShort("univ", configured_universe);
+  use_static_ip = prefs.getBool("static_ip", false);
+
+  saved_local_ip.fromString(prefs.getString("local_ip", "192.168.0.50"));
+  saved_gateway.fromString(prefs.getString("gateway", "192.168.0.1"));
+  saved_subnet.fromString(prefs.getString("subnet", "255.255.255.0"));
 }
 
 // ===================== ArtNet парсинг =====================
